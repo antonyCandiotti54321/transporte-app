@@ -10,7 +10,7 @@ export default function LoginScreen() {
 
   const handleLogin = async () => {
     try {
-      const response = await fetch('https://transporte-ecug.onrender.com/api/auth/login', {
+      const response = await fetch('https://api-transporte-98xe.onrender.com/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -21,10 +21,11 @@ export default function LoginScreen() {
       if (response.ok) {
         await AsyncStorage.setItem('token', data.token);
         await AsyncStorage.setItem('nombreCompleto', data.nombreCompleto);
-        await AsyncStorage.setItem('id', data.id.toString());
+        await AsyncStorage.setItem('idUsuario', data.idUsuario.toString());
+        await AsyncStorage.setItem('rol', data.rol);
 
         Alert.alert('Éxito', 'Sesión iniciada correctamente');
-        router.replace('/home'); // Navega a la pantalla "home"
+        router.replace('/home');
       } else {
         Alert.alert('Error', data?.message || 'Credenciales incorrectas');
       }

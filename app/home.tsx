@@ -1,98 +1,158 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
-import * as Location from 'expo-location';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Text, View } from 'react-native';
+import { Alert, Text, View, Button } from 'react-native';
+
+type Coordenada = {
+  latitud: number;
+  longitud: number;
+};
 
 export default function Home() {
-  const [location, setLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [location, setLocation] = useState<Coordenada | null>(null);
   const [payloadVisible, setPayloadVisible] = useState<string | null>(null);
-  const stompClient = useRef<Client | null>(null);
-  const intervalRef = useRef<number | null>(null);
+  const [enviandoUbicacion, setEnviandoUbicacion] = useState(false);
 
+  const stompClient = useRef<Client | null>(null);
+  const ubicacionesRef = useRef<Coordenada[]>([]);
+
+  const saveIntervalRef = useRef<number | null>(null);
+  const sendIntervalRef = useRef<number | null>(null);
+
+  const idRef = useRef<number | null>(null);
+  const baseLat = useRef(-12.05);
+  const baseLng = useRef(-77.04);
 
   useEffect(() => {
-    const pedirPermisoYConectar = async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permiso denegado', 'Se requiere acceso a la ubicación');
+    const inicializar = async () => {
+      const token = await AsyncStorage.getItem('token');
+      const idString = await AsyncStorage.getItem('idUsuario');
+      const id = idString ? parseInt(idString) : null;
+      idRef.current = id;
+
+      if (!token || !id) {
+        Alert.alert('Error', 'Token o ID no encontrado');
         return;
       }
 
-      try {
-        const token = await AsyncStorage.getItem('token');
-        const idString = await AsyncStorage.getItem('id');
-        const id = idString ? parseInt(idString) : null;
+      const client = new Client({
+        webSocketFactory: () => new SockJS(`https://api-transporte-98xe.onrender.com/ws?token=${token}`),
+        debug: (str) => console.log('STOMP:', str),
+        onConnect: () => {
+          console.log('✅ Conectado STOMP');
+        },
+        onStompError: (frame) => {
+          console.error('❌ Error STOMP:', frame.headers['message']);
+          console.error('Detalles:', frame.body);
+        },
+      });
 
-        if (!token || !id) {
-          Alert.alert('Error', 'Token o ID no encontrado');
-          console.log('token:', token);
-          console.log('id:', id);
-          return;
-        }
-
-        const client = new Client({
-          webSocketFactory: () => new SockJS(`https://transporte-ecug.onrender.com/ws?token=${token}`),
-          debug: (str) => console.log('STOMP:', str),
-          onConnect: async () => {
-            console.log('✅ Conectado por STOMP con SockJS');
-
-            // Inicia el envío periódico cada 5 segundos
-            intervalRef.current = setInterval(async () => {
-              const loc = await Location.getCurrentPositionAsync({});
-              setLocation(loc.coords);
-
-              const payload = {
-                id: id,
-                latitud: loc.coords.latitude,
-                longitud: loc.coords.longitude,
-              };
-
-              setPayloadVisible(JSON.stringify(payload, null, 2));
-
-              client.publish({
-                destination: '/app/ubicacion',
-                body: JSON.stringify(payload),
-              });
-
-              console.log('📡 Payload enviado:', payload);
-            }, 5000);
-          },
-          onStompError: (frame) => {
-            console.error('❌ Error STOMP:', frame.headers['message']);
-            console.error('Detalles:', frame.body);
-          },
-        });
-
-        stompClient.current = client;
-        client.activate();
-      } catch (e) {
-        console.log('Error al obtener token o ubicación:', e);
-      }
+      stompClient.current = client;
+      client.activate();
     };
 
-    pedirPermisoYConectar();
+    inicializar();
 
     return () => {
-      // Limpieza
+      stopSending();
       stompClient.current?.deactivate();
-      if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, []);
+
+  const generateFakeLocation = (): Coordenada => {
+    const delta = 0.00002;
+    const rand = Math.random() * 100;
+    let latOffset = 0;
+    let lngOffset = 0;
+
+    if (rand < 60) {
+      // 60% ir adelante
+      latOffset = delta;
+    } else if (rand < 75) {
+      // 15% adelante izquierda o derecha
+      latOffset = delta;
+      lngOffset = Math.random() < 0.5 ? -delta : delta;
+    } else if (rand < 80) {
+      // 5% atrás izquierda o derecha
+      latOffset = -delta;
+      lngOffset = Math.random() < 0.5 ? -delta : delta;
+    } else {
+      // 20% no se mueve (queda quieto)
+      latOffset = 0;
+      lngOffset = 0;
+    }
+
+    baseLat.current += latOffset;
+    baseLng.current += lngOffset;
+
+    return {
+      latitud: parseFloat(baseLat.current.toFixed(6)),
+      longitud: parseFloat(baseLng.current.toFixed(6)),
+    };
+  };
+
+  const startSending = () => {
+    if (!stompClient.current?.connected || !idRef.current) return;
+    setEnviandoUbicacion(true);
+
+    // ✅ Guardar ubicación cada 0.4 segundos
+    saveIntervalRef.current = setInterval(() => {
+      const ubicacion = generateFakeLocation();
+      ubicacionesRef.current.push(ubicacion);
+      setLocation(ubicacion);
+    }, 400) as unknown as number;
+
+    // ✅ Enviar paquete cada 5 segundos
+    sendIntervalRef.current = setInterval(() => {
+      if (ubicacionesRef.current.length === 0) return;
+
+      const payload = {
+        id: idRef.current,
+        ubicaciones: [...ubicacionesRef.current],
+      };
+
+      stompClient.current?.publish({
+        destination: '/app/ubicacion',
+        body: JSON.stringify(payload),
+      });
+
+      console.log('📦 Enviado paquete con', ubicacionesRef.current.length, 'ubicaciones');
+      setPayloadVisible(JSON.stringify(payload, null, 2));
+      ubicacionesRef.current = [];
+    }, 5000) as unknown as number;
+  };
+
+  const stopSending = () => {
+    if (saveIntervalRef.current !== null) clearInterval(saveIntervalRef.current);
+    if (sendIntervalRef.current !== null) clearInterval(sendIntervalRef.current);
+
+    saveIntervalRef.current = null;
+    sendIntervalRef.current = null;
+    setEnviandoUbicacion(false);
+    console.log('⛔ Envío detenido');
+  };
 
   return (
     <View style={{ padding: 20 }}>
       <Text style={{ fontWeight: 'bold', fontSize: 16 }}>Ubicación actual:</Text>
       {location ? (
-        <Text>Lat: {location.latitude}, Lng: {location.longitude}</Text>
+        <Text>Lat: {location.latitud}, Lng: {location.longitud}</Text>
       ) : (
-        <Text>Obteniendo ubicación...</Text>
+        <Text>Ubicación no disponible</Text>
       )}
+
+      <View style={{ marginTop: 20 }}>
+        {!enviandoUbicacion ? (
+          <Button title="Iniciar envío de ubicaciones" onPress={startSending} />
+        ) : (
+          <Button title="Detener envío" onPress={stopSending} color="red" />
+        )}
+      </View>
 
       {payloadVisible && (
         <View style={{ marginTop: 20 }}>
-          <Text style={{ fontWeight: 'bold' }}>Payload enviado:</Text>
+          <Text style={{ fontWeight: 'bold' }}>Último paquete enviado:</Text>
           <Text style={{ fontFamily: 'monospace' }}>{payloadVisible}</Text>
         </View>
       )}
