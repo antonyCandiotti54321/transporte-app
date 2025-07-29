@@ -1,8 +1,9 @@
+// imports
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Text, View, Button } from 'react-native';
+import { Alert, Text, View, Button, ScrollView } from 'react-native';
 
 type Coordenada = {
   latitud: number;
@@ -13,16 +14,24 @@ export default function Home() {
   const [location, setLocation] = useState<Coordenada | null>(null);
   const [payloadVisible, setPayloadVisible] = useState<string | null>(null);
   const [enviandoUbicacion, setEnviandoUbicacion] = useState(false);
+  const [simulando10, setSimulando10] = useState(false);
 
   const stompClient = useRef<Client | null>(null);
   const ubicacionesRef = useRef<Coordenada[]>([]);
-
   const saveIntervalRef = useRef<number | null>(null);
   const sendIntervalRef = useRef<number | null>(null);
 
   const idRef = useRef<number | null>(null);
-  const baseLat = useRef(-12.05);
-  const baseLng = useRef(-77.04);
+  const lastPositionRef = useRef<Coordenada>({ latitud: -12.05, longitud: -77.04 });
+
+  const fakeDrivers = useRef<{
+    [id: number]: {
+      ubicaciones: Coordenada[];
+      lastPosition: Coordenada;
+      saveInterval: number;
+      sendInterval: number;
+    };
+  }>({});
 
   useEffect(() => {
     const inicializar = async () => {
@@ -39,9 +48,7 @@ export default function Home() {
       const client = new Client({
         webSocketFactory: () => new SockJS(`https://api-transporte-98xe.onrender.com/ws?token=${token}`),
         debug: (str) => console.log('STOMP:', str),
-        onConnect: () => {
-          console.log('✅ Conectado STOMP');
-        },
+        onConnect: () => console.log('✅ Conectado STOMP'),
         onStompError: (frame) => {
           console.error('❌ Error STOMP:', frame.headers['message']);
           console.error('Detalles:', frame.body);
@@ -56,57 +63,48 @@ export default function Home() {
 
     return () => {
       stopSending();
+      stopSimulacion10();
       stompClient.current?.deactivate();
     };
   }, []);
 
-  const generateFakeLocation = (): Coordenada => {
-    const delta = 0.00002;
+  const generateFakeLocation = (prev: Coordenada): Coordenada => {
+    const delta = 0.0002; // más largo para avanzar en el mapa
     const rand = Math.random() * 100;
     let latOffset = 0;
     let lngOffset = 0;
 
     if (rand < 60) {
-      // 60% ir adelante
-      latOffset = delta;
+      latOffset = delta; // Adelante
     } else if (rand < 75) {
-      // 15% adelante izquierda o derecha
       latOffset = delta;
-      lngOffset = Math.random() < 0.5 ? -delta : delta;
+      lngOffset = Math.random() < 0.5 ? delta : -delta; // Adelante-Izq/Der
     } else if (rand < 80) {
-      // 5% atrás izquierda o derecha
       latOffset = -delta;
-      lngOffset = Math.random() < 0.5 ? -delta : delta;
+      lngOffset = Math.random() < 0.5 ? delta : -delta; // Atrás-Izq/Der
     } else {
-      // 20% no se mueve (queda quieto)
-      latOffset = 0;
-      lngOffset = 0;
+      lngOffset = Math.random() < 0.5 ? delta : -delta; // Lateral
     }
 
-    baseLat.current += latOffset;
-    baseLng.current += lngOffset;
-
-    return {
-      latitud: parseFloat(baseLat.current.toFixed(6)),
-      longitud: parseFloat(baseLng.current.toFixed(6)),
-    };
+    const newLat = parseFloat((prev.latitud + latOffset).toFixed(6));
+    const newLng = parseFloat((prev.longitud + lngOffset).toFixed(6));
+    return { latitud: newLat, longitud: newLng };
   };
 
   const startSending = () => {
     if (!stompClient.current?.connected || !idRef.current) return;
+    if (saveIntervalRef.current || sendIntervalRef.current) return;
     setEnviandoUbicacion(true);
 
-    // ✅ Guardar ubicación cada 0.4 segundos
     saveIntervalRef.current = setInterval(() => {
-      const ubicacion = generateFakeLocation();
-      ubicacionesRef.current.push(ubicacion);
-      setLocation(ubicacion);
-    }, 400) as unknown as number;
+      const nuevaUbicacion = generateFakeLocation(lastPositionRef.current);
+      lastPositionRef.current = nuevaUbicacion;
+      ubicacionesRef.current.push(nuevaUbicacion);
+      setLocation(nuevaUbicacion);
+    }, 200) as unknown as number;
 
-    // ✅ Enviar paquete cada 5 segundos
     sendIntervalRef.current = setInterval(() => {
       if (ubicacionesRef.current.length === 0) return;
-
       const payload = {
         id: idRef.current,
         ubicaciones: [...ubicacionesRef.current],
@@ -126,15 +124,62 @@ export default function Home() {
   const stopSending = () => {
     if (saveIntervalRef.current !== null) clearInterval(saveIntervalRef.current);
     if (sendIntervalRef.current !== null) clearInterval(sendIntervalRef.current);
-
     saveIntervalRef.current = null;
     sendIntervalRef.current = null;
     setEnviandoUbicacion(false);
     console.log('⛔ Envío detenido');
   };
 
+  const startSimulacion10 = () => {
+    if (!stompClient.current?.connected || simulando10) return;
+    setSimulando10(true);
+
+    for (let i = 1; i <= 10; i++) {
+      const initialLat = -12.05 + i * 0.002;
+      const initialLng = -77.04 + i * 0.002;
+      const ubicaciones: Coordenada[] = [];
+      let lastPosition = { latitud: initialLat, longitud: initialLng };
+
+      const saveInterval = setInterval(() => {
+        const nuevaUbicacion = generateFakeLocation(lastPosition);
+        lastPosition = nuevaUbicacion;
+        ubicaciones.push(nuevaUbicacion);
+      }, 200) as unknown as number;
+
+      const sendInterval = setInterval(() => {
+        if (ubicaciones.length === 0) return;
+        const payload = { id: i, ubicaciones: [...ubicaciones] };
+
+        stompClient.current?.publish({
+          destination: '/app/ubicacion',
+          body: JSON.stringify(payload),
+        });
+
+        console.log(`🚛 Chofer ${i}: enviado ${ubicaciones.length} ubicaciones`);
+        ubicaciones.length = 0;
+      }, 5000) as unknown as number;
+
+      fakeDrivers.current[i] = {
+        ubicaciones,
+        lastPosition,
+        saveInterval,
+        sendInterval,
+      };
+    }
+  };
+
+  const stopSimulacion10 = () => {
+    Object.values(fakeDrivers.current).forEach((driver) => {
+      clearInterval(driver.saveInterval);
+      clearInterval(driver.sendInterval);
+    });
+    fakeDrivers.current = {};
+    setSimulando10(false);
+    console.log('⛔ Simulación de 10 choferes detenida');
+  };
+
   return (
-    <View style={{ padding: 20 }}>
+    <ScrollView contentContainerStyle={{ padding: 20 }}>
       <Text style={{ fontWeight: 'bold', fontSize: 16 }}>Ubicación actual:</Text>
       {location ? (
         <Text>Lat: {location.latitud}, Lng: {location.longitud}</Text>
@@ -150,12 +195,20 @@ export default function Home() {
         )}
       </View>
 
+      <View style={{ marginTop: 20 }}>
+        {!simulando10 ? (
+          <Button title="Simular 10 choferes" onPress={startSimulacion10} color="green" />
+        ) : (
+          <Button title="Detener simulación de 10 choferes" onPress={stopSimulacion10} color="orange" />
+        )}
+      </View>
+
       {payloadVisible && (
         <View style={{ marginTop: 20 }}>
           <Text style={{ fontWeight: 'bold' }}>Último paquete enviado:</Text>
           <Text style={{ fontFamily: 'monospace' }}>{payloadVisible}</Text>
         </View>
       )}
-    </View>
+    </ScrollView>
   );
 }
