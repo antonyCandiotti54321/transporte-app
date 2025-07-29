@@ -4,6 +4,7 @@ import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Text, View, Button, ScrollView } from 'react-native';
+import * as Location from 'expo-location';
 import { useNavigation } from '@react-navigation/native';
 
 type Coordenada = {
@@ -16,11 +17,14 @@ export default function Home() {
   const [payloadVisible, setPayloadVisible] = useState<string | null>(null);
   const [enviandoUbicacion, setEnviandoUbicacion] = useState(false);
   const [simulando10, setSimulando10] = useState(false);
+  const [enviandoUbicacionReal, setEnviandoUbicacionReal] = useState(false);
 
   const stompClient = useRef<Client | null>(null);
   const ubicacionesRef = useRef<Coordenada[]>([]);
   const saveIntervalRef = useRef<number | null>(null);
   const sendIntervalRef = useRef<number | null>(null);
+  const realSaveIntervalRef = useRef<number | null>(null);
+  const realSendIntervalRef = useRef<number | null>(null);
 
   const idRef = useRef<number | null>(null);
   const lastPositionRef = useRef<Coordenada>({ latitud: -12.05, longitud: -77.04 });
@@ -67,6 +71,7 @@ export default function Home() {
     return () => {
       stopSending();
       stopSimulacion10();
+      stopSendingRealLocation();
       stompClient.current?.deactivate();
     };
   }, []);
@@ -130,7 +135,52 @@ export default function Home() {
     saveIntervalRef.current = null;
     sendIntervalRef.current = null;
     setEnviandoUbicacion(false);
-    console.log('⛔ Envío detenido');
+    console.log('⛔ Envío simulado detenido');
+  };
+
+  const startSendingRealLocation = async () => {
+    if (!stompClient.current?.connected || !idRef.current) return;
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permiso denegado', 'Se requiere acceso a la ubicación');
+      return;
+    }
+
+    setEnviandoUbicacionReal(true);
+
+    realSaveIntervalRef.current = setInterval(async () => {
+      const ubicacion = await Location.getCurrentPositionAsync({});
+      const coords = {
+        latitud: ubicacion.coords.latitude,
+        longitud: ubicacion.coords.longitude,
+      };
+      ubicacionesRef.current.push(coords);
+      setLocation(coords);
+    }, 200) as unknown as number;
+
+    realSendIntervalRef.current = setInterval(() => {
+      if (ubicacionesRef.current.length === 0) return;
+      const payload = {
+        id: idRef.current,
+        ubicaciones: [...ubicacionesRef.current],
+      };
+      stompClient.current?.publish({
+        destination: '/app/ubicacion',
+        body: JSON.stringify(payload),
+      });
+      console.log('📡 Enviando ubicación real', payload.ubicaciones.length);
+      setPayloadVisible(JSON.stringify(payload, null, 2));
+      ubicacionesRef.current = [];
+    }, 5000) as unknown as number;
+  };
+
+  const stopSendingRealLocation = () => {
+    if (realSaveIntervalRef.current) clearInterval(realSaveIntervalRef.current);
+    if (realSendIntervalRef.current) clearInterval(realSendIntervalRef.current);
+    realSaveIntervalRef.current = null;
+    realSendIntervalRef.current = null;
+    setEnviandoUbicacionReal(false);
+    console.log('⛔ Envío de ubicación real detenido');
   };
 
   const startSimulacion10 = () => {
@@ -201,15 +251,23 @@ export default function Home() {
 
       <View style={{ marginTop: 20 }}>
         {!enviandoUbicacion ? (
-          <Button title="Iniciar envío de ubicaciones" onPress={startSending} />
+          <Button title="Iniciar envío de ubicaciones (fake)" onPress={startSending} />
         ) : (
-          <Button title="Detener envío" onPress={stopSending} color="red" />
+          <Button title="Detener envío (fake)" onPress={stopSending} color="red" />
+        )}
+      </View>
+
+      <View style={{ marginTop: 20 }}>
+        {!enviandoUbicacionReal ? (
+          <Button title="Iniciar envío de ubicación real" onPress={startSendingRealLocation} color="green" />
+        ) : (
+          <Button title="Detener ubicación real" onPress={stopSendingRealLocation} color="orange" />
         )}
       </View>
 
       <View style={{ marginTop: 20 }}>
         {!simulando10 ? (
-          <Button title="Simular 10 choferes" onPress={startSimulacion10} color="green" />
+          <Button title="Simular 10 choferes" onPress={startSimulacion10} />
         ) : (
           <Button title="Detener simulación de 10 choferes" onPress={stopSimulacion10} color="orange" />
         )}
@@ -222,7 +280,6 @@ export default function Home() {
         </View>
       )}
 
-      {/* Botón de Cerrar Sesión */}
       <View style={{ marginTop: 40 }}>
         <Button title="Cerrar sesión" color="#555" onPress={cerrarSesion} />
       </View>
