@@ -4,6 +4,7 @@ import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Text, View, Button, ScrollView } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 
 type Coordenada = {
   latitud: number;
@@ -32,6 +33,8 @@ export default function Home() {
       sendInterval: number;
     };
   }>({});
+
+  const navigation = useNavigation<any>();
 
   useEffect(() => {
     const inicializar = async () => {
@@ -69,21 +72,21 @@ export default function Home() {
   }, []);
 
   const generateFakeLocation = (prev: Coordenada): Coordenada => {
-    const delta = 0.0002; // más largo para avanzar en el mapa
+    const delta = 0.0002;
     const rand = Math.random() * 100;
     let latOffset = 0;
     let lngOffset = 0;
 
     if (rand < 60) {
-      latOffset = delta; // Adelante
+      latOffset = delta;
     } else if (rand < 75) {
       latOffset = delta;
-      lngOffset = Math.random() < 0.5 ? delta : -delta; // Adelante-Izq/Der
+      lngOffset = Math.random() < 0.5 ? delta : -delta;
     } else if (rand < 80) {
       latOffset = -delta;
-      lngOffset = Math.random() < 0.5 ? delta : -delta; // Atrás-Izq/Der
+      lngOffset = Math.random() < 0.5 ? delta : -delta;
     } else {
-      lngOffset = Math.random() < 0.5 ? delta : -delta; // Lateral
+      lngOffset = Math.random() < 0.5 ? delta : -delta;
     }
 
     const newLat = parseFloat((prev.latitud + latOffset).toFixed(6));
@@ -178,6 +181,15 @@ export default function Home() {
     console.log('⛔ Simulación de 10 choferes detenida');
   };
 
+  const cerrarSesion = async () => {
+    await AsyncStorage.removeItem('token');
+    await AsyncStorage.removeItem('idUsuario');
+    navigation.reset({
+      index: 0,
+      routes: [{ name: 'login' }],
+    });
+  };
+
   return (
     <ScrollView contentContainerStyle={{ padding: 20 }}>
       <Text style={{ fontWeight: 'bold', fontSize: 16 }}>Ubicación actual:</Text>
@@ -209,6 +221,11 @@ export default function Home() {
           <Text style={{ fontFamily: 'monospace' }}>{payloadVisible}</Text>
         </View>
       )}
+
+      {/* Botón de Cerrar Sesión */}
+      <View style={{ marginTop: 40 }}>
+        <Button title="Cerrar sesión" color="#555" onPress={cerrarSesion} />
+      </View>
     </ScrollView>
   );
 }
